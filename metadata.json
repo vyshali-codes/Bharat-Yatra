@@ -1,0 +1,6 @@
+{
+  "name": "Bharat Yatra - Indian Heritage Board Game",
+  "description": "An interactive educational board game that takes players on a journey across India's history, culture, monuments, festivals, and traditions.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
