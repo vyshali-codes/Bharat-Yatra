@@ -19,7 +19,8 @@ import { getHeritageHuntChallenge } from '../data/heritageHuntTargets';
 import { getUniversalQuestion } from '../utils/questionEngine';
 import { calculateTimeBasedScore } from '../utils/scoring';
 import { storageService, DEFAULT_SETTINGS } from '../services/storageService';
-import { deviceService } from '../services/deviceService';
+import { deviceService, HardwareStatus } from '../services/deviceService';
+import { mqttService } from '../services/mqttService';
 import confetti from 'canvas-confetti';
 
 interface GameContextType {
@@ -76,6 +77,10 @@ interface GameContextType {
   gameHistory: SavedGameHistory[];
   settings: GameSettings;
 
+  // Hardware status
+  connectionStatus: HardwareStatus;
+  setConnectionMode: (mode: 'simulator' | 'websocket' | 'mqtt') => void;
+
   // Actions
   setupNewGame: (playerCount: number, customNames: string[], categories: CategoryType[]) => void;
   rollDice: () => void;
@@ -85,6 +90,7 @@ interface GameContextType {
   completeHeritageHunt: (points?: number) => void;
   updateSettings: (partial: Partial<GameSettings>) => void;
   clearAllHistory: () => void;
+  clearHistory: () => void;
   resetCurrentGame: () => void;
 }
 
@@ -1117,6 +1123,20 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
   }, [players, selectedCategories, setupNewGame]);
 
+  // Hardware connection status state
+  const [connectionStatus, setConnectionStatus] = useState<HardwareStatus>(deviceService.getStatus());
+  const setConnectionMode = useCallback((mode: 'simulator' | 'websocket' | 'mqtt') => {
+    deviceService.setMode(mode);
+    setConnectionStatus(deviceService.getStatus());
+  }, []);
+
+  useEffect(() => {
+    const unsub = mqttService.onStatusChange(() => {
+      setConnectionStatus(deviceService.getStatus());
+    });
+    return unsub;
+  }, []);
+
   // Connect hardware button events from DeviceAdapter (ESP32 simulator or real WebSocket)
   const deviceCallbacksRef = useRef({ rollDice, submitAnswer, nextTurn, triggerHeritageHunt });
   useEffect(() => {
@@ -1163,6 +1183,8 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         historyLog,
         gameHistory,
         settings,
+        connectionStatus,
+        setConnectionMode,
         setupNewGame,
         rollDice,
         submitAnswer,
@@ -1171,6 +1193,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         completeHeritageHunt,
         updateSettings,
         clearAllHistory,
+        clearHistory: clearAllHistory,
         resetCurrentGame,
         specialBlockModal,
         closeSpecialBlockModal,

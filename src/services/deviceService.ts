@@ -1,181 +1,287 @@
-import { ESP32EventFromDevice, ESP32EventToDevice } from '../types/game';
+/**
+ * BHARAT YATRA - Device Service & Hardware Adapter
+ *
+ * Integrates MQTT communication for the ESP32 + 1.3" OLED secondary display.
+ * The phone/browser remains the sole game controller.
+ */
 
-export type DeviceListener = (event: ESP32EventFromDevice) => void;
-export type DeviceStateListener = (event: ESP32EventToDevice) => void;
+import { mqttService } from './mqttService';
+import { MqttGameEvent, MqttConnectionState } from '../types/mqtt';
 
-export interface DeviceAdapter {
-  name: string;
-  isConnected(): boolean;
-  connect(url?: string): Promise<boolean>;
-  disconnect(): void;
-  sendToDevice(event: ESP32EventToDevice): void;
-  onDeviceEvent(listener: DeviceListener): () => void;
-  onStateUpdate(listener: DeviceStateListener): () => void;
+export interface HardwareStatus {
+  status: MqttConnectionState;
+  broker: string;
+  topic: string;
+  roomId: string;
+  mode: 'simulator' | 'websocket' | 'mqtt';
 }
 
-/**
- * Browser Simulator Adapter:
- * Emulates the physical ESP32 + OLED device directly within the browser runtime.
- * Dispatches simulated hardware buttons and OLED render frames.
- */
-class BrowserSimulatorDeviceAdapter implements DeviceAdapter {
-  public name = 'Browser ESP32 Simulator';
-  private deviceListeners: Set<DeviceListener> = new Set();
-  private stateListeners: Set<DeviceStateListener> = new Set();
-  private connected = true;
+export interface DeviceEvent {
+  type: 'ROLL' | 'ANSWER' | 'NEXT' | 'HERITAGE_REQUEST' | string;
+  answer?: 'A' | 'B' | 'C' | 'D';
+  [key: string]: unknown;
+}
 
-  public isConnected(): boolean {
-    return this.connected;
-  }
+export type StateUpdateListener = (evt: { type: string; payload?: unknown }) => void;
+export type DeviceEventListener = (event: DeviceEvent) => void;
 
-  public async connect(): Promise<boolean> {
-    this.connected = true;
-    return true;
-  }
+export class BrowserDeviceAdapter {
+  private stateListeners: Set<StateUpdateListener> = new Set();
+  private deviceListeners: Set<DeviceEventListener> = new Set();
 
-  public disconnect(): void {
-    this.connected = false;
-  }
-
-  public sendToDevice(event: ESP32EventToDevice): void {
-    // Notify all UI simulator components asynchronously to avoid React setState during render
-    queueMicrotask(() => {
-      this.stateListeners.forEach((listener) => {
-        try {
-          listener(event);
-        } catch (err) {
-          console.error('Error dispatching state to simulator:', err);
-        }
-      });
-    });
-  }
-
-  public emitFromDevice(event: ESP32EventFromDevice): void {
-    queueMicrotask(() => {
-      this.deviceListeners.forEach((listener) => {
-        try {
-          listener(event);
-        } catch (err) {
-          console.error('Error handling simulated hardware button:', err);
-        }
-      });
-    });
-  }
-
-  public onDeviceEvent(listener: DeviceListener): () => void {
-    this.deviceListeners.add(listener);
-    return () => this.deviceListeners.delete(listener);
-  }
-
-  public onStateUpdate(listener: DeviceStateListener): () => void {
+  public onStateUpdate(listener: StateUpdateListener): () => void {
     this.stateListeners.add(listener);
     return () => this.stateListeners.delete(listener);
   }
-}
 
-/**
- * Real Hardware WebSocket Adapter (Modular Placeholder for Future Physical ESP32):
- * Allows connecting a real ESP32 micro-controller board running FreeRTOS/Arduino
- * via a WebSocket server (e.g., ws://192.168.4.1:81 or local LAN gateway).
- */
-export class WebSocketDeviceAdapter implements DeviceAdapter {
-  public name = 'Real ESP32 WebSocket';
-  private socket: WebSocket | null = null;
-  private deviceListeners: Set<DeviceListener> = new Set();
-  private stateListeners: Set<DeviceStateListener> = new Set();
-  private connected = false;
-
-  public isConnected(): boolean {
-    return this.connected && this.socket?.readyState === WebSocket.OPEN;
-  }
-
-  public async connect(url: string = 'ws://192.168.4.1:81'): Promise<boolean> {
-    return new Promise((resolve) => {
+  public notifyState(evt: { type: string; payload?: unknown }): void {
+    this.stateListeners.forEach((listener) => {
       try {
-        this.socket = new WebSocket(url);
-        this.socket.onopen = () => {
-          this.connected = true;
-          resolve(true);
-        };
-        this.socket.onerror = () => {
-          this.connected = false;
-          resolve(false);
-        };
-        this.socket.onclose = () => {
-          this.connected = false;
-        };
-        this.socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data) as ESP32EventFromDevice;
-            this.deviceListeners.forEach((l) => l(data));
-          } catch (e) {
-            console.warn('Malformed hardware payload from ESP32:', e);
-          }
-        };
-      } catch {
-        this.connected = false;
-        resolve(false);
+        listener(evt);
+      } catch (e) {
+        console.error('Error in state update listener:', e);
       }
     });
   }
 
-  public disconnect(): void {
-    if (this.socket) {
-      this.socket.close();
-      this.socket = null;
-    }
-    this.connected = false;
+  public emitFromDevice(event: DeviceEvent): void {
+    this.deviceListeners.forEach((listener) => {
+      try {
+        listener(event);
+      } catch (e) {
+        console.error('Error in device event listener:', e);
+      }
+    });
   }
 
-  public sendToDevice(event: ESP32EventToDevice): void {
-    if (this.isConnected() && this.socket) {
-      this.socket.send(JSON.stringify(event));
-    }
-    // Also broadcast to any connected UI observers
-    this.stateListeners.forEach((l) => l(event));
-  }
-
-  public onDeviceEvent(listener: DeviceListener): () => void {
+  public onDeviceEvent(listener: DeviceEventListener): () => void {
     this.deviceListeners.add(listener);
     return () => this.deviceListeners.delete(listener);
   }
-
-  public onStateUpdate(listener: DeviceStateListener): () => void {
-    this.stateListeners.add(listener);
-    return () => this.stateListeners.delete(listener);
-  }
 }
 
-// Global active device adapter singleton instance
-export const browserDeviceAdapter = new BrowserSimulatorDeviceAdapter();
-export const realDeviceAdapter = new WebSocketDeviceAdapter();
+export const browserDeviceAdapter = new BrowserDeviceAdapter();
 
 class DeviceService {
-  private activeAdapter: DeviceAdapter = browserDeviceAdapter;
-  private mode: 'browser' | 'websocket' = 'browser';
+  private adapter: BrowserDeviceAdapter = browserDeviceAdapter;
+  private mode: 'simulator' | 'websocket' | 'mqtt' = 'simulator';
 
-  public getMode(): 'browser' | 'websocket' {
+  constructor() {
+    // When mqttService receives a message from the broker, notify local adapter
+    mqttService.onMessage((event) => {
+      this.adapter.notifyState({
+        type: event.type,
+        payload: event
+      });
+    });
+  }
+
+  public getAdapter(): BrowserDeviceAdapter {
+    return this.adapter;
+  }
+
+  public getMode(): 'simulator' | 'websocket' | 'mqtt' {
     return this.mode;
   }
 
-  public setMode(mode: 'browser' | 'websocket') {
+  public setMode(mode: 'simulator' | 'websocket' | 'mqtt'): void {
     this.mode = mode;
-    this.activeAdapter = mode === 'browser' ? browserDeviceAdapter : realDeviceAdapter;
   }
 
-  public getAdapter(): DeviceAdapter {
-    return this.activeAdapter;
+  public getStatus(): HardwareStatus {
+    return {
+      status: mqttService.getStatus(),
+      broker: mqttService.getBrokerUrl(),
+      topic: mqttService.getTopic(),
+      roomId: mqttService.getRoomId(),
+      mode: this.mode
+    };
   }
 
-  public getBrowserAdapter(): BrowserSimulatorDeviceAdapter {
-    return browserDeviceAdapter;
+  /**
+   * Publishes an MQTT game event to the ESP32 secondary OLED display
+   */
+  public publish(event: MqttGameEvent): void {
+    this.adapter.notifyState({
+      type: event.type,
+      payload: event
+    });
+    mqttService.publish(event);
   }
 
-  public send(event: ESP32EventToDevice) {
-    this.activeAdapter.sendToDevice(event);
-    // Always mirror to browser simulator so inspector stays live!
-    if (this.activeAdapter !== browserDeviceAdapter) {
-      browserDeviceAdapter.sendToDevice(event);
+  /**
+   * Compatibility wrapper for legacy send calls across GameContext
+   */
+  public send(event: { type: string; payload?: Record<string, unknown> }): void {
+    // Immediately notify local adapter
+    this.adapter.notifyState(event);
+
+    const p = event.payload || {};
+    switch (event.type) {
+      case 'DICE_RESULT':
+        this.publish({
+          type: 'DICE_RESULT',
+          player: Number(p.player || 1),
+          value: Number(p.value || p.roll || 1)
+        });
+        break;
+      case 'DICE_ROLL':
+        this.publish({
+          type: 'DICE_ROLL',
+          player: Number(p.player || 1),
+          value: Number(p.value || p.roll || 1)
+        });
+        break;
+      case 'READY_TO_ROLL':
+        this.publish({
+          type: 'READY_TO_ROLL',
+          player: Number(p.player || 1),
+          name: p.name ? String(p.name) : undefined,
+          score: p.score !== undefined ? Number(p.score) : undefined,
+          position: p.position !== undefined ? Number(p.position) : undefined
+        });
+        break;
+      case 'MOVEMENT':
+        this.publish({
+          type: 'MOVEMENT',
+          player: Number(p.player || 1),
+          fromPosition: p.fromPosition !== undefined ? Number(p.fromPosition) : undefined,
+          toPosition: Number(p.toPosition || p.position || 1),
+          city: p.city ? String(p.city) : undefined
+        });
+        break;
+      case 'QUESTION':
+        this.publish({
+          type: 'QUESTION',
+          locationId: Number(p.locationId || 1),
+          locationName: String(p.locationName || p.city || 'India'),
+          category: String(p.category || 'Monuments'),
+          question: String(p.question || ''),
+          options: Array.isArray(p.options)
+            ? (p.options as string[])
+            : Object.values((p.options as Record<string, string>) || {})
+        });
+        break;
+      case 'TIMER':
+        this.publish({
+          type: 'TIMER',
+          remaining: Number(p.remaining || 0)
+        });
+        break;
+      case 'PLAYER':
+        this.publish({
+          type: 'PLAYER',
+          player: Number(p.player || p.playerIndex || 1),
+          name: String(p.name || 'Player'),
+          score: Number(p.score || 0),
+          position: Number(p.position || 1),
+          status: String(p.status || 'READY_TO_ROLL')
+        });
+        break;
+      case 'GAME_START':
+        this.publish({
+          type: 'GAME_START',
+          players: Array.isArray(p.players) ? (p.players as any) : [],
+          round: Number(p.round || 1)
+        });
+        break;
+      case 'CORRECT':
+        this.publish({
+          type: 'CORRECT',
+          player: Number(p.player || 1),
+          points: Number(p.points || 0),
+          score: Number(p.score || 0)
+        });
+        break;
+      case 'WRONG':
+        this.publish({
+          type: 'WRONG',
+          player: Number(p.player || 1),
+          points: Number(p.points || 0),
+          score: Number(p.score || 0),
+          correctAnswer: String(p.correctAnswer || '')
+        });
+        break;
+      case 'TIMEOUT':
+        this.publish({
+          type: 'TIMEOUT',
+          player: Number(p.player || 1),
+          points: Number(p.points || 0),
+          score: Number(p.score || 0),
+          correctAnswer: String(p.correctAnswer || '')
+        });
+        break;
+      case 'ANSWER_RESULT':
+        this.publish({
+          type: 'ANSWER_RESULT',
+          player: Number(p.player || 1),
+          isCorrect: Boolean(p.isCorrect),
+          points: Number(p.points || 0),
+          score: Number(p.score || 0),
+          correctAnswer: p.correctAnswer ? String(p.correctAnswer) : undefined
+        });
+        break;
+      case 'SPECIAL_BLOCK':
+        this.publish({
+          type: 'SPECIAL_BLOCK',
+          blockType: String(p.blockType || 'Special Block'),
+          city: String(p.city || ''),
+          challenge: String(p.challenge || ''),
+          difficulty: p.difficulty ? String(p.difficulty) : undefined
+        });
+        break;
+      case 'SPECIAL_CHALLENGE':
+        this.publish({
+          type: 'SPECIAL_CHALLENGE',
+          blockType: String(p.blockType || 'Special Challenge'),
+          city: p.city ? String(p.city) : undefined,
+          challenge: String(p.challenge || ''),
+          difficulty: p.difficulty ? String(p.difficulty) : undefined
+        });
+        break;
+      case 'HERITAGE_HUNT':
+        this.publish({
+          type: 'HERITAGE_HUNT',
+          city: String(p.city || ''),
+          monument: p.monument ? String(p.monument) : undefined,
+          clue: p.clue ? String(p.clue) : undefined
+        });
+        break;
+      case 'HERITAGE_RESULT':
+        this.publish({
+          type: 'HERITAGE_RESULT',
+          player: Number(p.player || 1),
+          isCorrect: Boolean(p.isCorrect),
+          points: Number(p.points || 0),
+          score: Number(p.score || 0)
+        });
+        break;
+      case 'GAME_STATE':
+        this.publish({
+          type: 'GAME_STATE',
+          phase: String(p.phase || ''),
+          round: Number(p.round || 1),
+          currentPlayer: Number(p.currentPlayer || 1),
+          location: p.location ? String(p.location) : undefined
+        });
+        break;
+      case 'TURN_COMPLETE':
+        this.publish({
+          type: 'TURN_COMPLETE',
+          player: Number(p.player || 1),
+          nextPlayer: Number(p.nextPlayer || 1)
+        });
+        break;
+      case 'GAME_END':
+        this.publish({
+          type: 'GAME_END',
+          winner: String(p.winner || 'Winner'),
+          score: Number(p.score || 0)
+        });
+        break;
+      default:
+        this.publish(event as unknown as MqttGameEvent);
+        break;
     }
   }
 }
